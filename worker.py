@@ -1,6 +1,7 @@
 # worker.py
 
 import asyncio
+
 import aioboto3
 import aiohttp
 import os
@@ -8,19 +9,19 @@ import uuid
 import tempfile
 import shutil
 import logging
+import torch
 from dotenv import load_dotenv
 from concurrent.futures import ProcessPoolExecutor
 import subprocess
-import signal
 
-# 환경 변수 로드
+# 환경 변수 로드 / 자동으로 aioboto3에 업로드 됩니다.
 load_dotenv()
 
 # 환경 변수 설정
 SQS_QUEUE_URL = os.getenv("SQS_QUEUE_URL")
 S3_BUCKET = os.getenv("S3_BUCKET")
 SPRING_ENDPOINT = os.getenv("SPRING_ENDPOINT")
-MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "5"))
+MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "2"))
 MAX_DEMUCS_WORKERS = int(os.getenv("MAX_DEMUCS_WORKERS", "2"))  # 동시에 실행할 Demucs 프로세스 수
 
 # 로깅 설정
@@ -29,7 +30,7 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('worker.log')
+        logging.FileHandler('worker.log', encoding='utf-8')
     ]
 )
 logger = logging.getLogger(__name__)
@@ -37,12 +38,20 @@ logger = logging.getLogger(__name__)
 # 멀티프로세싱용 실행자
 executor = ProcessPoolExecutor(max_workers=MAX_DEMUCS_WORKERS)
 
+# device 설정
+if torch.cuda.is_available():
+    device = "cuda"
+else:
+    device = "cpu"
+
+
+session = aioboto3.Session()
 
 def run_demucs_sync(input_path, output_dir):
     """
     Demucs를 동기적으로 실행하여 음원을 스템 분리합니다.
     """
-    command = ["demucs", "-o", output_dir, input_path]
+    command = ["demucs", "-d", device, "-o", output_dir, input_path]
     logger.info(f"[Demucs] 명령어 실행: {' '.join(command)}")
     try:
         process = subprocess.run(command, capture_output=True, text=True, check=True)
@@ -123,7 +132,7 @@ async def process_message(sqs_client, message, semaphore):
 
         try:
             # 1. S3에서 음원 파일 다운로드
-            async with aioboto3.client('s3') as s3_client:
+            async with session.client('s3') as s3_client:
                 await download_from_s3(s3_client, S3_BUCKET, s3_key, input_path)
 
             # 2. Demucs로 스템 분리 (GPU 사용)
@@ -131,14 +140,14 @@ async def process_message(sqs_client, message, semaphore):
 
             # Demucs 출력 폴더에서 스템 파일 경로 찾기
             original_filename = os.path.splitext(os.path.basename(input_path))[0]
-            result_folder = os.path.join(demucs_output_dir, original_filename)
+            result_folder = os.path.join(demucs_output_dir, "htdemucs", original_filename)
             if not os.path.isdir(result_folder):
                 raise FileNotFoundError(f"Demucs 결과 폴더가 존재하지 않습니다: {result_folder}")
 
             # 3. 스템 파일들을 S3에 업로드
             result_urls = []
             upload_tasks = []
-            async with aioboto3.client('s3') as s3_upload_client:
+            async with session.client('s3') as s3_upload_client:
                 for stem_file in os.listdir(result_folder):
                     stem_path = os.path.join(result_folder, stem_file)
                     unique_id = str(uuid.uuid4())
@@ -177,7 +186,6 @@ async def worker():
     SQS에서 메시지를 폴링하고 처리하는 워커 함수.
     """
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
-    session = aioboto3.Session()
 
     while True:
         try:
@@ -204,24 +212,11 @@ async def worker():
             await asyncio.sleep(5)  # 예외 발생 시 잠시 대기 후 재시도
 
 
-def shutdown():
-    """
-    워커를 안전하게 종료하기 위한 함수.
-    """
-    logger.info("워커를 중지합니다.")
-    for task in asyncio.all_tasks():
-        task.cancel()
-
-
 async def main():
     """
     메인 함수: 워커를 시작합니다.
     """
     # 시그널 핸들러 설정
-    loop = asyncio.get_event_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, shutdown)
-
     await worker()
 
 
@@ -231,4 +226,4 @@ if __name__ == "__main__":
     except asyncio.CancelledError:
         logger.info("워커가 취소되었습니다.")
     except Exception as e:
-        logger.error(f"[Fatal Error] 워커 실행 중 치명적인 오류 발생: {e}")
+        logger.error(f"[Fatal Error] 워커 실행 중 치명적인 오류 발생: {e.__class__.__name__}")
