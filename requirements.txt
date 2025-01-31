@@ -1,0 +1,16 @@
+# torch
+torch==2.6.0+cu126
+torchaudio==2.6.0+cu126
+torchvision==0.21.0+cu126
+PySoundFile==0.9.0.post1
+
+# demucs
+demucs==4.0.1
+
+# 비동기 처리
+aioboto3
+aiohttp
+asyncio
+
+# 환경변수
+python-dotenv
