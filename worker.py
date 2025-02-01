@@ -21,8 +21,8 @@ load_dotenv()
 SQS_QUEUE_URL = os.getenv("SQS_QUEUE_URL")
 S3_BUCKET = os.getenv("S3_BUCKET")
 SPRING_ENDPOINT = os.getenv("SPRING_ENDPOINT")
-MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "2"))
-MAX_DEMUCS_WORKERS = int(os.getenv("MAX_DEMUCS_WORKERS", "2"))  # 동시에 실행할 Demucs 프로세스 수
+MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", "5"))
+MAX_DEMUCS_WORKERS = int(os.getenv("MAX_DEMUCS_WORKERS", "5"))  # 동시에 실행할 Demucs 프로세스 수
 
 # 로깅 설정
 logging.basicConfig(
@@ -47,11 +47,12 @@ else:
 
 session = aioboto3.Session()
 
-def run_demucs_sync(input_path, output_dir):
+def run_demucs_sync(input_path, output_dir, task_type):
     """
     Demucs를 동기적으로 실행하여 음원을 스템 분리합니다.
     """
-    command = ["demucs", "-d", device, "-o", output_dir, input_path]
+    command = task_type + ["-d", device, "-o", output_dir, input_path]
+
     logger.info(f"[Demucs] 명령어 실행: {' '.join(command)}")
     try:
         process = subprocess.run(command, capture_output=True, text=True, check=True)
@@ -62,12 +63,20 @@ def run_demucs_sync(input_path, output_dir):
         raise RuntimeError(f"Demucs 실행 실패: {e.stderr}")
 
 
-async def run_demucs_async(input_path, output_dir):
+async def run_demucs_async(input_path, output_dir, task_type):
     """
     Demucs를 비동기적으로 실행하기 위한 래퍼 함수.
     """
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(executor, run_demucs_sync, input_path, output_dir)
+    await loop.run_in_executor(executor, run_demucs_sync, input_path, output_dir, task_type)
+
+    # Demucs 출력 폴더에서 스템 파일 경로 찾기
+    original_filename = os.path.splitext(os.path.basename(input_path))[0]
+    result_folder = os.path.join(output_dir, "htdemucs", original_filename)
+    if not os.path.isdir(result_folder):
+        raise FileNotFoundError(f"Demucs 결과 폴더가 존재하지 않습니다: {result_folder}")
+
+    return result_folder
 
 
 async def download_from_s3(s3_client, bucket, key, download_path):
@@ -96,12 +105,12 @@ async def upload_to_s3(s3_client, bucket, key, upload_path):
         raise
 
 
-async def notify_spring(session, payload):
+async def notify_spring(http_session, payload):
     """
     Spring 서버에 결과를 비동기적으로 알립니다.
     """
     try:
-        async with session.post(SPRING_ENDPOINT, json=payload) as resp:
+        async with http_session.post(SPRING_ENDPOINT, json=payload) as resp:
             response_text = await resp.text()
             if resp.status == 200:
                 logger.info(f"[Notify] Spring 서버로 결과 전송 성공: {response_text}")
@@ -110,75 +119,89 @@ async def notify_spring(session, payload):
                 raise RuntimeError(f"Spring 서버 전송 실패: {resp.status} - {response_text}")
     except Exception as e:
         logger.error(f"[Notify Error] Spring 서버에 알림을 보내는 중 오류 발생: {e}")
-        raise
+        raise e
 
 
 async def process_message(sqs_client, message, semaphore):
     """
     단일 SQS 메시지를 처리하는 함수.
     """
-    async with semaphore:
+    async with (semaphore):
         receipt_handle = message['ReceiptHandle']
-        body = message['Body'].strip()
+        body = message['Body'].strip().split(" ")
 
-        # 메시지 형식에 따라 파싱 (예: JSON)
-        # 여기서는 간단히 S3 키가 메시지 본문에 있다고 가정
-        s3_key = body
-        logger.info(f"[Process] 메시지 수신: {s3_key}")
+        # 메시지 형식에 따라 파싱
+        s3_key = body[0]
+        task_id = body[1]
+        task_type = body[2:]
+
+        logger.info(f"[Process] 메시지 수신: {body}")
 
         tmp_dir = tempfile.mkdtemp()
         input_path = os.path.join(tmp_dir, os.path.basename(s3_key))
-        demucs_output_dir = os.path.join(tmp_dir, "demucs_output")
+        task_output_dir = os.path.join(tmp_dir, "demucs_output")
 
         try:
             # 1. S3에서 음원 파일 다운로드
             async with session.client('s3') as s3_client:
                 await download_from_s3(s3_client, S3_BUCKET, s3_key, input_path)
-
-            # 2. Demucs로 스템 분리 (GPU 사용)
-            await run_demucs_async(input_path, demucs_output_dir)
-
-            # Demucs 출력 폴더에서 스템 파일 경로 찾기
-            original_filename = os.path.splitext(os.path.basename(input_path))[0]
-            result_folder = os.path.join(demucs_output_dir, "htdemucs", original_filename)
-            if not os.path.isdir(result_folder):
-                raise FileNotFoundError(f"Demucs 결과 폴더가 존재하지 않습니다: {result_folder}")
-
+            # 2. Task 처리
+            if task_type[0] == "demucs":
+                # Demucs 로 스템 분리
+                result_folder = await run_demucs_async(input_path, task_output_dir, task_type)
+            elif task_type[0] == "librosa":
+                raise NotImplementedError
+                # result_folder = await run_demucs_async(input_path, task_output_dir)
+            else:
+                raise ValueError(f"지원되지 않는 작업 유형입니다: {task_type[0]}")
             # 3. 스템 파일들을 S3에 업로드
             result_urls = []
             upload_tasks = []
             async with session.client('s3') as s3_upload_client:
-                for stem_file in os.listdir(result_folder):
-                    stem_path = os.path.join(result_folder, stem_file)
-                    unique_id = str(uuid.uuid4())
-                    result_key = f"results/{unique_id}/{stem_file}"
-                    upload_tasks.append(upload_to_s3(s3_upload_client, S3_BUCKET, result_key, stem_path))
+                for result_file in os.listdir(result_folder):
+                    result_path = os.path.join(result_folder, result_file)
+                    result_key = f"resultFiles/{task_id}/{result_file}"
+                    upload_tasks.append(upload_to_s3(s3_upload_client, S3_BUCKET, result_key, result_path))
 
                 # 모든 업로드를 동시에 실행
                 uploaded_urls = await asyncio.gather(*upload_tasks)
                 result_urls.extend(uploaded_urls)
 
+        except Exception as e: # 실패!
+            logger.error(f"[Error] 메시지 처리 중 예외 발생: {e}")
+            # 메시지를 앞단에서 삭제하지 않으면 Visibility Timeout 후 재처리됩니다.
+            # 필요에 따라 Dead Letter Queue(DLQ) 설정을 고려할 수 있습니다.
             # 4. Spring 서버에 결과 알림
             payload = {
-                "original_file": f"s3://{S3_BUCKET}/{s3_key}",
-                "stems": result_urls
+                "task_id": task_id,
+                "task_type": task_type,
+                "status": "failed",
+                "errorMessage": str(e)
             }
             async with aiohttp.ClientSession() as http_session:
                 await notify_spring(http_session, payload)
 
+        else: # 성공!
+            # 4. Spring 서버에 결과 알림
+            payload = {
+                "task_id": task_id,
+                "task_type": task_type,
+                "status": "completed",
+                "result": {
+                    "original_file": f"s3://{S3_BUCKET}/{s3_key}",
+                    "stems": result_urls
+                }
+            }
+            async with aiohttp.ClientSession() as http_session:
+                await notify_spring(http_session, payload)
             # 5. SQS 메시지 삭제
             await sqs_client.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
             logger.info(f"[Delete] SQS 메시지 삭제 완료: {receipt_handle}")
 
-        except Exception as e:
-            logger.error(f"[Error] 메시지 처리 중 예외 발생: {e}")
-            # 메시지를 삭제하지 않으면 Visibility Timeout 후 재처리됩니다.
-            # 필요에 따라 Dead Letter Queue(DLQ) 설정을 고려할 수 있습니다.
-
-        finally:
+        finally: # 무조건 돌아감
             # 임시 디렉토리 정리
-            shutil.rmtree(tmp_dir, ignore_errors=True)
             logger.info(f"[Cleanup] 임시 디렉토리 삭제: {tmp_dir}")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 async def worker():
@@ -192,7 +215,7 @@ async def worker():
             async with session.client('sqs') as sqs_client:
                 response = await sqs_client.receive_message(
                     QueueUrl=SQS_QUEUE_URL,
-                    MaxNumberOfMessages=10,  # 한 번에 가져올 메시지 수 (최대 10)
+                    MaxNumberOfMessages=5,  # 한 번에 가져올 메시지 수 (최대 10)
                     WaitTimeSeconds=20,  # 롱 폴링 (최대 20초)
                     VisibilityTimeout=60  # 메시지 가시성 타임아웃 (초)
                 )
@@ -203,7 +226,7 @@ async def worker():
 
                 logger.info(f"[Receive] {len(messages)}개의 메시지 수신")
 
-                # 각 메시지를 비동기적으로 처리
+                # 각 메시지를 비동기적으로 처리 // semaphore 부족하면?
                 tasks = [process_message(sqs_client, msg, semaphore) for msg in messages]
                 await asyncio.gather(*tasks)
 
