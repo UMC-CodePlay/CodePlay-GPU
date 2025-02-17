@@ -8,8 +8,8 @@ import aiohttp
 import json
 
 from config import SQS_QUEUE_URL, S3_BUCKET, SPRING_ENDPOINT, logger
-from demucs_utils import run_demucs_async
-from aws_utils import download_from_s3, upload_to_s3, session
+from track_utils import run_demucs_async
+from aws_utils import download_from_s3, session
 from notification_utils import notify_spring
 
 
@@ -44,36 +44,7 @@ async def process_message(sqs_client, message, semaphore):
             # 2. Task 처리
             if task_type == "TRACK":
                 # Demucs 로 스템 분리
-                result_folder = await run_demucs_async(input_path, tmp_output_dir, body["twoStemConfig"])
-
-                # 3. 결과 파일을 업로드 / payload
-                payload = {
-                    "taskId": task_id,
-                    "isTwoStem": not (body["twoStemConfig"] == "none")
-                }
-                upload_tasks = []
-                async with session.client('s3') as s3_ul_client:
-                    for result_file in os.listdir(result_folder):
-                        result_path = os.path.join(result_folder, result_file)
-                        result_key = f"resultFiles/{task_id}/{result_file}"
-                        upload_tasks.append(
-                            upload_to_s3(s3_ul_client, S3_BUCKET, result_key, result_path)
-                        )
-                        tmp = result_file.split(".")[0]
-                        if tmp == "vocals":
-                            payload["vocalUrl"] = f"https://{S3_BUCKET}.s3.amazonaws.com/{result_key}"
-                        elif tmp == "bass":
-                            payload["bassUrl"] = f"https://{S3_BUCKET}.s3.amazonaws.com/{result_key}"
-                        elif tmp == "drums":
-                            payload["drumsUrl"] = f"https://{S3_BUCKET}.s3.amazonaws.com/{result_key}"
-                        elif tmp == "guitar":
-                            payload["guitarUrl"] = f"https://{S3_BUCKET}.s3.amazonaws.com/{result_key}"
-                        elif tmp == "piano":
-                            payload["pianoUrl"] = f"https://{S3_BUCKET}.s3.amazonaws.com/{result_key}"
-                        else:
-                            payload["instrumentalUrl"] = f"https://{S3_BUCKET}.s3.amazonaws.com/{result_key}"
-                    # 모든 업로드를 동시에 실행
-                    await asyncio.gather(*upload_tasks)
+                payload = await run_demucs_async(input_path, tmp_output_dir, body, session)
 
                 # 엔드포인트 분리
                 endpoint += "tracks"
@@ -98,7 +69,6 @@ async def process_message(sqs_client, message, semaphore):
 
         else:
             # 4. Spring 서버에 결과 알림(성공)
-            print(payload)
             async with aiohttp.ClientSession() as http_session:
                 await notify_spring(http_session, endpoint, payload)
 

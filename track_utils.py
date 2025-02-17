@@ -1,9 +1,10 @@
-# demucs_utils.py
+# track_utils.py
 
 import subprocess
 import os
 import asyncio
-from config import device, executor, logger
+from config import device, executor, logger, S3_BUCKET
+from aws_utils import upload_to_s3
 
 
 def run_demucs_sync(input_path, output_dir, two_stem_config):
@@ -16,6 +17,8 @@ def run_demucs_sync(input_path, output_dir, two_stem_config):
         command += ["--two-stems", two_stem_config, "-d"]
     elif two_stem_config in ["guitar", "piano"]:
         command += ["-n", "htdemucs_6s", "--two-stems", two_stem_config, "-d"]
+    else:
+        command += ["-d"]
     command += [device, "-o", output_dir, input_path]
 
     logger.info(f"[Demucs] 명령어 실행: {' '.join(command)}")
@@ -28,33 +31,63 @@ def run_demucs_sync(input_path, output_dir, two_stem_config):
         raise RuntimeError(f"Demucs 실행 실패: {e.stderr}")
 
 
-async def run_demucs_async(input_path, output_dir, two_stem_config):
+async def run_demucs_async(input_path, output_dir, body, session):
     """
     Demucs를 비동기적으로 실행하기 위한 래퍼 함수.
     """
+
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(
         executor,
         run_demucs_sync,
         input_path,
         output_dir,
-        two_stem_config
+        body["twoStemConfig"]
     )
 
     # Demucs 출력 폴더에서 스템 파일 경로 찾기
     original_filename = os.path.splitext(os.path.basename(input_path))[0]
-    if two_stem_config in ["guitar", "piano"]:
+    if body["twoStemConfig"] in ["guitar", "piano"]:
         result_folder = os.path.join(output_dir, "htdemucs_6s", original_filename)
     else:
         result_folder = os.path.join(output_dir, "htdemucs", original_filename)
     if not os.path.isdir(result_folder):
         raise FileNotFoundError(f"Demucs 결과 폴더가 존재하지 않습니다: {result_folder}")
 
-    return result_folder
+    return await demucs_upload_async(session, body, result_folder)
 
-async def demucs_upload_async(client, ):
+
+async def demucs_upload_async(session, body, result_folder):
     """
     Demucs S3 업로드 및 Spring Server 에 제공할 payload 생성 함수.
     """
-
-    async with
+    task_id = body["taskId"]
+    payload = {
+        "taskId": task_id,
+        "isTwoStem": not (body["twoStemConfig"] == "none")
+    }
+    upload_tasks = []
+    async with session.client('s3') as s3_ul_client:
+        for result_file in os.listdir(result_folder):
+            result_path = os.path.join(result_folder, result_file)
+            result_key = f"resultFiles/{task_id}/{result_file}"
+            upload_tasks.append(
+                upload_to_s3(s3_ul_client, S3_BUCKET, result_key, result_path)
+            )
+            tmp = result_file.split(".")[0]
+            if tmp == "vocals":
+                payload["vocalUrl"] = f"https://{S3_BUCKET}.s3.amazonaws.com/{result_key}"
+            elif tmp == "bass":
+                payload["bassUrl"] = f"https://{S3_BUCKET}.s3.amazonaws.com/{result_key}"
+            elif tmp == "drums":
+                payload["drumsUrl"] = f"https://{S3_BUCKET}.s3.amazonaws.com/{result_key}"
+            elif tmp == "guitar":
+                payload["guitarUrl"] = f"https://{S3_BUCKET}.s3.amazonaws.com/{result_key}"
+            elif tmp == "piano":
+                payload["pianoUrl"] = f"https://{S3_BUCKET}.s3.amazonaws.com/{result_key}"
+            else:
+                payload["instrumentalUrl"] = f"https://{S3_BUCKET}.s3.amazonaws.com/{result_key}"
+        # 모든 업로드를 동시에 실행
+        await asyncio.gather(*upload_tasks)
+    print(payload)
+    return payload
