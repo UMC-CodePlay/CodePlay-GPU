@@ -1,22 +1,16 @@
---extra-index-url https://download.pytorch.org/whl/cu126
-# torch
-torch==2.6.0+cu126
-torchaudio==2.6.0+cu126
-torchvision==0.21.0+cu126
-PySoundFile==0.9.0.post1
-
-# demucs
-demucs==4.0.1
-
 # 비동기 처리
-aioboto3
-aiohttp
-asyncio
+aioboto3~=13.4.0
+aiohttp~=3.10.11
+asyncio~=3.4.3
 
 # 환경변수
-python-dotenv
+python-dotenv~=1.0.1
 
-wheel==0.44.0
-# essentia
-essentia
-# essentia
+essentia~=2.1b6.dev1110
+
+torch~=2.4.1
+numpy~=1.24.4
+pydub~=0.25.1
+
+soundfile
+pyrubberband
