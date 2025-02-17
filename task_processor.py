@@ -9,6 +9,8 @@ import json
 
 from config import SQS_QUEUE_URL, S3_BUCKET, SPRING_ENDPOINT, logger
 from track_utils import run_demucs_async
+from remix_utils import run_remix_async
+from harmony_utils import run_harmony_async
 from aws_utils import download_from_s3, session
 from notification_utils import notify_spring
 
@@ -50,33 +52,32 @@ async def process_message(sqs_client, message, semaphore):
                 endpoint += "tracks"
 
             elif task_type == "HARMONY":
-                raise NotImplementedError("harmony 작업은 아직 구현되지 않았습니다.")
+                payload = await run_harmony_async(input_path, body)
+
+                endpoint += "harmony"
             elif task_type == "REMIX":
-                raise NotImplementedError("remix 작업은 아직 구현되지 않았습니다.")
+                payload = await run_remix_async(input_path, tmp_output_dir, body, session)
+
+                endpoint += "remix"
             else:
                 raise ValueError(f"지원되지 않는 작업 유형입니다: {task_type}")
 
         except Exception as e:
             logger.error(f"[Error] 메시지 처리 중 예외 발생: {e}")
             endpoint += "fail"
-            # 4. Spring 서버에 결과 알림(실패)
+            # ** 실패할 경우 payload 변경
             payload = {
                 "taskId": task_id,
                 "failMessage": str(e)
             }
-            async with aiohttp.ClientSession() as http_session:
-                await notify_spring(http_session, endpoint, payload)
-
-        else:
-            # 4. Spring 서버에 결과 알림(성공)
-            async with aiohttp.ClientSession() as http_session:
-                await notify_spring(http_session, endpoint, payload)
-
-            # 5. SQS 메시지 삭제
-            await sqs_client.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
-            logger.info(f"[Delete] SQS 메시지 삭제 완료: {receipt_handle}")
 
         finally:
+            # 4. Spring 서버에 알림
+            async with aiohttp.ClientSession() as http_session:
+                await notify_spring(http_session, endpoint, payload)
+            # 5. SQS 메시지 삭제
+            await sqs_client.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
+            logger.info(f"[Delete] SQS 메시지 삭제 완료: task_id = {task_id}")
             # 임시 디렉토리 정리
             logger.info(f"[Cleanup] 임시 디렉토리 삭제: {tmp_output_dir}")
             shutil.rmtree(tmp_output_dir, ignore_errors=True)

@@ -1,11 +1,102 @@
 import essentia
 import essentia.standard as es
 import numpy as np
+from config import frame_size, hop_size, sample_rate, windowing, spectrum, mfcc, rms, logger, minor_keys, major_keys, notes, cpu_executor
+import asyncio
+
+def run_harmony_sync(input_path):
+    try:
+        loader = es.MonoLoader(filename=input_path, sampleRate=sample_rate)
+        audio = loader()
+        logger.info("[Harmony] 하모니 파일 변환 완료")
+
+        result_dict = {}
+
+        key_extractor = es.KeyExtractor()
+        key, scale, key_strength = key_extractor(audio)
+        result_dict["key"] = get_relative_key(key, scale)
+        result_dict["component"] = get_scale_notes(key, scale)
+        result_dict["key_strength"] = key_strength
+        logger.info("[Harmony] 하모니 키 추출 완료")
+
+        rhythm_extractor = es.RhythmExtractor2013()
+        bpm, beats, beats_confidence, _, _ = rhythm_extractor(audio)
+        result_dict["bpm"] = int(bpm)
+        result_dict["bpm_strength"] = beats_confidence
+        logger.info("[Harmony] 하모니 bpm 추출 완료")
+
+        energy_profile = []
+        mfccs = []
+        # 프레임별 분석
+        for frame in es.FrameGenerator(audio, frameSize=frame_size, hopSize=hop_size):
+            windowed_frame = windowing(frame)
+            spec = spectrum(windowed_frame)
+            energy = rms(frame)
+            energy_profile.append(energy)
+            # MFCC 계산
+            mfcc_bands, mfcc_coeffs = mfcc(spec)
+            mfccs.append(mfcc_coeffs)
+        # MFCC 기반 음악 특성 분석
+        mfcc_array = np.array(mfccs)
+        mfcc_mean = np.mean(mfcc_array, axis=0)
+        mfcc_std = np.std(mfcc_array, axis=0)
+        # 음색의 안정성 (낮을수록 안정적)
+        timbre_stability = np.mean(mfcc_std[1:])
+        # 음색의 밝기
+        brightness = np.mean(mfcc_mean[1:6])
+        # 음색의 복잡도
+        complexity = np.sum(np.abs(mfcc_mean[6:]))
+        result_dict["timbre_stability"] = "high" if timbre_stability < 20 else "medium" if timbre_stability < 40 else "low"
+        result_dict["brightness"] = "bright" if brightness > 0 else "dark"
+        logger.info("[Harmony] 하모니 음색 추출 완료")
+        result_dict["complexity"] = "simple" if complexity < 100 else "medium"if complexity < 200 else "complex"
+        # 장르 추정
+        if timbre_stability < 20:
+            if complexity < 100:
+                result_dict["genre"] = "classic"
+            elif complexity > 200:
+                result_dict["genre"] = "jazz"
+            else:
+                result_dict["genre"] = "pop"
+        elif timbre_stability > 40:
+            if complexity > 150:
+                result_dict["genre"] = "rock or jazz"
+        else:
+            if complexity > 180:
+                result_dict["genre"] = "electronic"
+            else:
+                result_dict["genre"] = "pop"
+        logger.info("[Harmony] 하모니 장르 추출 및 전체 실행 완료")
+
+        return result_dict
+    except Exception as e:
+        logger.error(f"[Harmony Error] Harmony 실행 실패: {e}")
+        raise RuntimeError(f"Harmony 실행 실패: {e}")
+
+async def run_harmony_async(input_path, body):
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        cpu_executor,
+        run_harmony_sync,
+        input_path
+    )
+
+    return harmony_get_payload(body, result)
+
+def harmony_get_payload(body, result):
+    task_id = body["taskId"]
+
+    return {
+        "taskId": task_id,
+        "scale": result["key"] + ": " + result["component"],
+        "bpm": result["bpm"],
+        "genre": result["genre"],
+        "voiceColor": result["brightness"]
+    }
 
 def get_relative_key(key, scale):
     """주어진 키의 관계조를 반환"""
-    major_keys = ['C', 'G', 'D', 'A', 'E', 'B', 'F#', 'C#', 'F', 'Bb', 'Eb', 'Ab']
-    minor_keys = ['A', 'E', 'B', 'F#', 'C#', 'G#', 'D#', 'A#', 'D', 'G', 'C', 'F']
 
     if scale == 'major':
         idx = major_keys.index(key)
@@ -16,7 +107,6 @@ def get_relative_key(key, scale):
 
 def get_scale_notes(key, scale):
     """키와 스케일에 따른 구성음 반환"""
-    notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
     # 시작 음의 인덱스 찾기
     start_idx = notes.index(key)
@@ -34,113 +124,3 @@ def get_scale_notes(key, scale):
         scale_notes.append(notes[note_idx])
 
     return ' - '.join(scale_notes)
-
-def analyze_audio(audio_file):
-    # 오디오 로딩
-    loader = es.MonoLoader(filename=audio_file, sampleRate=44100)
-    audio = loader()
-
-    print("\n=== 기본 음악 정보 ===")
-
-    try:
-        # 1. 키/스케일 분석
-        key_extractor = es.KeyExtractor()
-        key, scale, key_strength = key_extractor(audio)
-        key_with_relative = get_relative_key(key, scale)
-        scale_notes = get_scale_notes(key, scale)
-        print(f"키: {key_with_relative}")
-        print(f"구성음: {scale_notes}")
-        # print(f"키 신뢰도: {key_strength:.2f}")
-    except Exception as e:
-        print("키 분석 실패:", str(e))
-
-    try:
-        # 2. 리듬/BPM 분석
-        rhythm_extractor = es.RhythmExtractor2013()
-        bpm, beats, beats_confidence, _, _ = rhythm_extractor(audio)
-        print(f"\nBPM: {bpm:.1f}")
-        # print(f"비트 신뢰도: {beats_confidence:.2f}")
-    except Exception as e:
-        print("리듬 분석 실패:", str(e))
-
-    print("\n=== 음악 특성 분석 ===")
-
-    # 프레임 파라미터 설정
-    frame_size = 2048
-    hop_size = 1024
-    sample_rate = 44100
-
-    # 알고리즘 초기화
-    windowing = es.Windowing(type='hann', size=frame_size)
-    spectrum = es.Spectrum()
-    mfcc = es.MFCC(
-        inputSize=frame_size//2 + 1,
-        numberBands=40,
-        numberCoefficients=13,
-        sampleRate=sample_rate,
-        lowFrequencyBound=20,
-        highFrequencyBound=20000
-    )
-    rms = es.RMS()
-
-    # 분석 결과 저장
-    energy_profile = []
-    mfccs = []
-
-    # 프레임별 분석
-    for frame in es.FrameGenerator(audio, frameSize=frame_size, hopSize=hop_size):
-        windowed_frame = windowing(frame)
-        spec = spectrum(windowed_frame)
-        energy = rms(frame)
-        energy_profile.append(energy)
-
-        # MFCC 계산
-        mfcc_bands, mfcc_coeffs = mfcc(spec)
-        mfccs.append(mfcc_coeffs)
-
-    # MFCC 기반 음악 특성 분석
-    mfcc_array = np.array(mfccs)
-    mfcc_mean = np.mean(mfcc_array, axis=0)
-    mfcc_std = np.std(mfcc_array, axis=0)
-    print(mfcc_mean, mfcc_std, mfcc_array)
-
-    # 음색의 안정성 (낮을수록 안정적)
-    timbre_stability = np.mean(mfcc_std[1:])
-
-    # 음색의 밝기
-    brightness = np.mean(mfcc_mean[1:6])
-
-    # 음색의 복잡도
-    complexity = np.sum(np.abs(mfcc_mean[6:]))
-
-
-    # print(f"\n음색 안정성: {'높음' if timbre_stability < 20 else '보통' if timbre_stability < 40 else '낮음'}")
-    print(f"\n음색 특성: {'밝은' if brightness > 0 else '어두운'} 음색")
-    print(f"\n음색 복잡도: {'단순함' if complexity < 100 else '보통' if complexity < 200 else '복잡함'}")
-
-    # 장르 추정
-    possible_genres = []
-    if timbre_stability < 20:
-        if complexity < 100:
-            possible_genres.append('클래식')
-        elif complexity > 200:
-            possible_genres.append('재즈')
-        else:
-            possible_genres.append('팝')
-    elif timbre_stability > 40:
-        if complexity > 150:
-            possible_genres.append('록')
-            possible_genres.append('재즈')
-    else:
-        if complexity > 180:
-            possible_genres.append('일렉트로닉')
-        else:
-            possible_genres.append('팝')
-
-    print(f"\n가능성 높은 장르: {', '.join(possible_genres)}")
-
-def main():
-    analyze_audio('test.mp3')
-
-if __name__ == "__main__":
-    main()

@@ -3,7 +3,7 @@
 import subprocess
 import os
 import asyncio
-from config import device, executor, logger, S3_BUCKET
+from config import device, gpu_executor, logger, S3_BUCKET
 from aws_utils import upload_to_s3
 
 
@@ -14,12 +14,12 @@ def run_demucs_sync(input_path, output_dir, two_stem_config):
     # task_type을 Command line 인자로 그대로 쓴다고 가정
     command = ["demucs"]
     if two_stem_config in ["vocals", "bass", "drums"]:
-        command += ["--two-stems", two_stem_config, "-d"]
+        command += ["--two-stems", ]
     elif two_stem_config in ["guitar", "piano"]:
         command += ["-n", "htdemucs_6s", "--two-stems", two_stem_config, "-d"]
     else:
         command += ["-d"]
-    command += [device, "-o", output_dir, input_path]
+    command += [two_stem_config, "-d", device, "--mp3", "-o", output_dir, input_path]
 
     logger.info(f"[Demucs] 명령어 실행: {' '.join(command)}")
     try:
@@ -38,14 +38,14 @@ async def run_demucs_async(input_path, output_dir, body, session):
 
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(
-        executor,
+        gpu_executor,
         run_demucs_sync,
         input_path,
         output_dir,
         body["twoStemConfig"]
     )
 
-    # Demucs 출력 폴더에서 스템 파일 경로 찾기
+    # Demucs 출력 폴더에서 스템 파일 경로 찾기 //  최적화
     original_filename = os.path.splitext(os.path.basename(input_path))[0]
     if body["twoStemConfig"] in ["guitar", "piano"]:
         result_folder = os.path.join(output_dir, "htdemucs_6s", original_filename)
@@ -89,5 +89,4 @@ async def demucs_upload_async(session, body, result_folder):
                 payload["instrumentalUrl"] = f"https://{S3_BUCKET}.s3.amazonaws.com/{result_key}"
         # 모든 업로드를 동시에 실행
         await asyncio.gather(*upload_tasks)
-    print(payload)
     return payload
