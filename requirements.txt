@@ -15,3 +15,8 @@ asyncio
 
 # 환경변수
 python-dotenv
+
+wheel==0.44.0
+# essentia
+essentia
+# essentia

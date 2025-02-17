@@ -8,3 +8,8 @@
 *.log
 
 results/
+
+__pycache__/
+
+.mp3
+.wav
