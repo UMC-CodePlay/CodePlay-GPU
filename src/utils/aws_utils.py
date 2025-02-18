@@ -1,10 +1,6 @@
 # src/aws_utils.py
 
-import aioboto3
-
 from src.config import logger
-
-session = aioboto3.Session()  # 세션을 모듈 전역으로 사용 (원하면 worker.py 내부에서 생성해도 됨)
 
 
 async def download_from_s3(s3_client, bucket, key, download_path):

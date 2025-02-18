@@ -9,5 +9,3 @@ CUDA - 12.6 (any GPU with cuda 12.6 will work)
 ffmpeg - sudo apt-get install ffmpeg
 
 rubberband-cli - sudo apt-get install rubberband-cli
-
-

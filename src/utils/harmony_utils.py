@@ -6,6 +6,7 @@ import numpy as np
 
 from src.config import frame_size, hop_size, sample_rate, windowing, spectrum, mfcc, rms, logger, minor_keys, major_keys, notes, cpu_executor
 
+
 def run_harmony_sync(input_path):
     """
     Performs harmonic analysis and audio feature extraction on the given input audio file.

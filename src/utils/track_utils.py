@@ -3,7 +3,7 @@
 import subprocess
 import os
 import asyncio
-from src.config import device, gpu_executor, logger, S3_BUCKET
+from src.config import device, gpu_executor, logger, S3_BUCKET, aws_session
 from src.utils.aws_utils import upload_to_s3
 
 
@@ -30,54 +30,54 @@ def run_demucs_sync(input_path, output_dir, two_stem_config):
     """
 
     # task_type을 Command line 인자로 그대로 쓴다고 가정
+    model = "htdemucs"
     command = ["demucs"]
     if two_stem_config in ["vocals", "bass", "drums"]:
         command += ["--two-stems", two_stem_config]
     elif two_stem_config in ["guitar", "piano"]:
         command += ["-n", "htdemucs_6s", "--two-stems", two_stem_config]
+        model = "htdemucs_6s"
 
-    command += [ "-d", device, "--mp3", "-o", output_dir, input_path]
+    command += ["-d", device, "--mp3", "-o", output_dir, input_path]
 
     logger.info(f"[Demucs] 명령어 실행: {' '.join(command)}")
     try:
         process = subprocess.run(command, capture_output=True, text=True, check=True)
         logger.info(f"[Demucs] 스템 분리 완료: {input_path}")
         logger.debug(f"[Demucs Output] {process.stdout}")
+        return model
     except subprocess.CalledProcessError as e:
         logger.error(f"[Demucs Error] Demucs 실행 실패: {e.stderr}")
         raise RuntimeError(f"Demucs 실행 실패: {e.stderr}")
 
 
-async def run_demucs_async(input_path, output_dir, body, session):
+async def run_demucs_async(input_path, output_dir, body):
     """
-    Asynchronously runs Demucs for audio stem separation and uploads the results.
+    Asynchronously runs the Demucs audio separation process and uploads the resulting separated
+    audio files.
 
-    Summary:
-        This function executes the Demucs audio stem separator asynchronously in
-        a separate GPU executor. It processes an audio file based on the
-        provided configuration, identifies the result folder, and uploads the
-        processed files to a specified session.
+    This function utilizes an asynchronous executor to offload the Demucs processing to a
+    separate thread or process, allowing the main event loop to remain responsive. Based on
+    the `twoStemConfig` value provided in the request body, it determines the specific
+    output folder where the separated audio stems are generated and validates its existence.
+    If the folder does not exist, an exception is raised. Upon successful processing, the
+    result is uploaded using the demucs_upload_async function.
 
     Args:
-        input_path (str): Path to the input audio file to be processed.
-        output_dir (str): Directory where Demucs output data should be saved.
-        body (dict): Dictionary containing configuration details such as
-            'twoStemConfig' specifying the mode of operation (e.g., 'guitar',
-            'piano').
-        session (aiohttp.ClientSession): Async session object for uploading
-            results.
-
-    Raises:
-        FileNotFoundError: If the expected result folder from Demucs does not
-            exist.
+        input_path (str): Absolute path to the input audio file to process.
+        output_dir (str): Directory path where the Demucs output should be stored.
+        body (dict): Request payload containing configuration details such as `twoStemConfig`.
 
     Returns:
-        aiohttp.ClientResponse: The response object from the upload operation
-        performed after processing the audio.
+        Any: Result of the demucs_upload_async function, indicating the upload status or response.
+
+    Raises:
+        FileNotFoundError: If the expected Demucs result folder does not exist in the output
+            directory.
     """
 
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(
+    model = await loop.run_in_executor(
         gpu_executor,
         run_demucs_sync,
         input_path,
@@ -87,17 +87,14 @@ async def run_demucs_async(input_path, output_dir, body, session):
 
     # Demucs 출력 폴더에서 스템 파일 경로 찾기 //  최적화
     original_filename = os.path.splitext(os.path.basename(input_path))[0]
-    if body["twoStemConfig"] in ["guitar", "piano"]:
-        result_folder = os.path.join(output_dir, "htdemucs_6s", original_filename)
-    else:
-        result_folder = os.path.join(output_dir, "htdemucs", original_filename)
+    result_folder = os.path.join(output_dir, model, original_filename)
     if not os.path.isdir(result_folder):
         raise FileNotFoundError(f"Demucs 결과 폴더가 존재하지 않습니다: {result_folder}")
 
-    return await demucs_upload_async(session, body, result_folder)
+    return await demucs_upload_async(body, result_folder)
 
 
-async def demucs_upload_async(session, body, result_folder):
+async def demucs_upload_async(body, result_folder):
     """
     Perform asynchronous upload of processed audio files to an S3 bucket and generate a payload
     containing URLs corresponding to the processed audio types.
@@ -109,8 +106,6 @@ async def demucs_upload_async(session, body, result_folder):
     includes a unique task identifier and a flag whether a two-stem configuration is enabled.
 
     Parameters:
-    session (aiohttp.ClientSession): The session used for creating an S3 client for communication
-        with the S3 bucket.
     body (dict): Dictionary containing details of the upload process such as "taskId" identifying
         the current task and "twoStemConfig" settings which determine if two-stem configuration
         should be applied.
@@ -131,7 +126,7 @@ async def demucs_upload_async(session, body, result_folder):
         "isTwoStem": not (body["twoStemConfig"] == "none")
     }
     upload_tasks = []
-    async with session.client('s3') as s3_ul_client:
+    async with aws_session.client('s3') as s3_ul_client:
         for result_file in os.listdir(result_folder):
             result_path = os.path.join(result_folder, result_file)
             result_key = f"resultFiles/{task_id}/{result_file}"

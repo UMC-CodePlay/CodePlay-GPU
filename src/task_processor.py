@@ -6,11 +6,11 @@ import os
 import aiohttp
 import json
 
-from src.config import SQS_QUEUE_URL, S3_BUCKET, SPRING_ENDPOINT, logger
+from src.config import SQS_QUEUE_URL, S3_BUCKET, SPRING_ENDPOINT, logger, aws_session
 from src.utils.track_utils import run_demucs_async
 from src.utils.remix_utils import run_remix_async
 from src.utils.harmony_utils import run_harmony_async
-from src.utils.aws_utils import download_from_s3, session
+from src.utils.aws_utils import download_from_s3
 from src.utils.notification_utils import notify_spring
 
 
@@ -58,13 +58,14 @@ async def process_message(sqs_client, message, semaphore):
 
         try:
             # 1. S3에서 음원 파일 다운로드
-            async with session.client('s3') as s3_dl_client:
-                await download_from_s3(s3_dl_client, S3_BUCKET, s3_key, input_path)
+            async with aws_session.client('s3') as s3_dl_client:
+                key = "requestFiles/" + str(body["musicId"]) + "/" + s3_key
+                await download_from_s3(s3_dl_client, S3_BUCKET, key, input_path)
 
             # 2. Task 처리
             if task_type == "TRACK":
                 # Demucs 로 스템 분리
-                payload = await run_demucs_async(input_path, tmp_output_dir, body, session)
+                payload = await run_demucs_async(input_path, tmp_output_dir, body)
 
                 # 엔드포인트 분리
                 endpoint += "tracks"
@@ -74,7 +75,7 @@ async def process_message(sqs_client, message, semaphore):
 
                 endpoint += "harmony"
             elif task_type == "REMIX":
-                payload = await run_remix_async(input_path, tmp_output_dir, body, session)
+                payload = await run_remix_async(input_path, tmp_output_dir, body)
 
                 endpoint += "remix"
             else:
