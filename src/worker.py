@@ -3,8 +3,7 @@
 import asyncio
 
 from src.task_processor import process_message
-from src.config import SQS_QUEUE_URL, MAX_CONCURRENT_TASKS, logger
-from src.utils.aws_utils import session
+from src.config import SQS_QUEUE_URL, MAX_CONCURRENT_TASKS, logger, aws_session
 
 
 async def worker():
@@ -13,14 +12,14 @@ async def worker():
     """
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
 
-    async with session.client('sqs') as sqs_client:
+    async with aws_session.client('sqs') as sqs_client:
         while True:
             try:
                 response = await sqs_client.receive_message(
                     QueueUrl=SQS_QUEUE_URL,
                     MaxNumberOfMessages=5,  # 한 번에 가져올 메시지 수 (최대 10)
                     WaitTimeSeconds=20,  # 롱 폴링 (최대 20초)
-                    VisibilityTimeout=60  # 메시지 가시성 타임아웃 (초)
+                    VisibilityTimeout=100  # 메시지 가시성 타임아웃 (초)
                 )
 
                 messages = response.get('Messages', [])

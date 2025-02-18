@@ -4,6 +4,7 @@ import os
 import logging
 import torch
 import essentia.standard as es
+import aioboto3
 from dotenv import load_dotenv
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -70,3 +71,6 @@ rms = es.RMS()
 major_keys = ['C', 'G', 'D', 'A', 'E', 'B', 'F#', 'C#', 'F', 'Bb', 'Eb', 'Ab']
 minor_keys = ['A', 'E', 'B', 'F#', 'C#', 'G#', 'D#', 'A#', 'D', 'G', 'C', 'F']
 notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+# 세션
+aws_session = aioboto3.Session()

@@ -8,7 +8,7 @@ import os
 import io
 
 from pydub import AudioSegment
-from src.config import cpu_executor, logger, S3_BUCKET
+from src.config import cpu_executor, logger, S3_BUCKET, aws_session
 from src.utils.aws_utils import upload_to_s3
 
 
@@ -104,7 +104,7 @@ def run_remix_sync(input_path, output_dir, tempo, pitch, chorus, space):
         logger.error(f"[Remix Error] Remix 실행 실패: {e}")
         raise RuntimeError(f"Remix 실행 실패: {e}")
 
-async def run_remix_async(input_path, output_dir, body, session):
+async def run_remix_async(input_path, output_dir, body):
     """
     Asynchronously runs the remix process on the given input file, applying audio
     modifications based on provided parameters, and uploads the processed file
@@ -119,8 +119,6 @@ async def run_remix_async(input_path, output_dir, body, session):
                 - scaleModulation (bool): Whether to apply scale modulation.
                 - isChorusOn (bool): Whether the chorus effect is enabled.
                 - reverbAmount (float): The amount of reverb effect to apply.
-        session (aiohttp.ClientSession): The asynchronous HTTP session used
-            for uploading the processed file.
 
     Returns:
         Any: The response from the upload process after the remix is completed.
@@ -142,9 +140,9 @@ async def run_remix_async(input_path, output_dir, body, session):
         body["reverbAmount"]
     )
 
-    return await remix_upload_async(session, body, output_file)
+    return await remix_upload_async(body, output_file)
 
-async def remix_upload_async(session, body, result_file):
+async def remix_upload_async(body, result_file):
     """
         Asynchronously uploads a remix result file to an S3 bucket and generates a URL.
 
@@ -173,7 +171,7 @@ async def remix_upload_async(session, body, result_file):
         "taskId": task_id,
     }
 
-    async with session.client('s3') as s3_ul_client:
+    async with aws_session.client('s3') as s3_ul_client:
         result_key = f"resultFiles/{task_id}/{os.path.basename(result_file)}"
         await upload_to_s3(s3_ul_client, S3_BUCKET, result_key, result_file)
 
