@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
+
+
 # 프로젝트 루트 경로 (config.py 기준으로 두 단계 상위: src/ 상위가 ProjectRoot/)
 BASE_DIR = Path(__file__).resolve().parent.parent
 
