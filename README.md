@@ -10,3 +10,8 @@ ffmpeg - sudo apt-get install ffmpeg
 
 rubberband-cli - sudo apt-get install rubberband-cli
 
+
+
+
+
+
