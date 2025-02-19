@@ -4,7 +4,9 @@ import asyncio
 import essentia.standard as es
 import numpy as np
 
-from src.config import frame_size, hop_size, sample_rate, windowing, spectrum, mfcc, rms, logger, minor_keys, major_keys, notes, cpu_executor
+from src.config import (
+    frame_size, hop_size, sample_rate, windowing, spectrum, mfcc, rms, logger,
+    minor_keys, major_keys, notes, cpu_executor, major_mapping, minor_mapping, note_mapping)
 
 
 def run_harmony_sync(input_path):
@@ -175,10 +177,10 @@ def get_relative_key(key, scale):
     """
 
     if scale == 'major':
-        idx = major_keys.index(key)
+        idx = major_mapping[key]
         return f"{key} major({minor_keys[idx]} minor)"
     else:  # minor
-        idx = minor_keys.index(key)
+        idx = minor_mapping[key]
         return f"{key} minor({major_keys[idx]} major)"
 
 def get_scale_notes(key, scale):
@@ -209,7 +211,7 @@ def get_scale_notes(key, scale):
     """
 
     # 시작 음의 인덱스 찾기
-    start_idx = notes.index(key)
+    start_idx = note_mapping[key]
 
     # 스케일에 따른 음정 간격
     if scale == 'major':

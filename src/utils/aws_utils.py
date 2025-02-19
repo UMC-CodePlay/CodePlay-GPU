@@ -60,7 +60,12 @@ async def upload_to_s3(s3_client, bucket, key, upload_path):
     """
 
     try:
-        await s3_client.upload_file(Filename=upload_path, Bucket=bucket, Key=key)
+        await s3_client.upload_file(
+            Filename=upload_path,
+            Bucket=bucket,
+            Key=key,
+            ExtraArgs={'ContentType': 'audio/mpeg'}
+        )
         file_url = f"https://{bucket}.s3.amazonaws.com/{key}"
         logger.info(f"[Upload] {upload_path} -> S3의 {key} 업로드 완료. URL: {file_url}")
         return file_url
