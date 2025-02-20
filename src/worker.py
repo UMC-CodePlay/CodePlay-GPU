@@ -4,6 +4,7 @@ import asyncio
 
 from src.task_processor import process_message
 from src.config import SQS_QUEUE_URL, MAX_CONCURRENT_TASKS, logger, aws_session
+from src.utils.discord_bot import run_bot, send_message
 
 
 async def worker():
@@ -12,6 +13,8 @@ async def worker():
     """
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
 
+    logger.info("ALL INITIALIZED. GPU WORKER IS READY.")
+
     async with aws_session.client('sqs') as sqs_client:
         while True:
             try:
@@ -19,7 +22,7 @@ async def worker():
                     QueueUrl=SQS_QUEUE_URL,
                     MaxNumberOfMessages=5,  # 한 번에 가져올 메시지 수 (최대 10)
                     WaitTimeSeconds=20,  # 롱 폴링 (최대 20초)
-                    VisibilityTimeout=100  # 메시지 가시성 타임아웃 (초)
+                    VisibilityTimeout=120  # 메시지 가시성 타임아웃 (초)
                 )
 
                 messages = response.get('Messages', [])
@@ -34,6 +37,10 @@ async def worker():
 
             except Exception as e:
                 logger.error(f"[Error] 워커 루프 중 예외 발생: {e}")
+                try:
+                    await send_message(f"[Error] 워커 루프 중 예외 발생: {e}")
+                except Exception as e:
+                    logger.error(f"[Discord] 메시지 전송 실패: {e}")
                 await asyncio.sleep(5)  # 예외 발생 시 잠시 대기 후 재시도
 
 
@@ -41,7 +48,10 @@ async def main():
     """
     메인 함수: 워커를 시작합니다.
     """
-    await worker()
+    bot_task = asyncio.create_task(run_bot())
+    worker_task = asyncio.create_task(worker())
+
+    await asyncio.gather(worker_task, bot_task)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,8 @@ from src.utils.remix_utils import run_remix_async
 from src.utils.harmony_utils import run_harmony_async
 from src.utils.aws_utils import download_from_s3
 from src.utils.notification_utils import notify_spring
+from src.utils.file_utils import replace_spaces_in_filename
+from src.utils.discord_bot import send_message
 
 
 async def process_message(sqs_client, message, semaphore):
@@ -38,7 +40,7 @@ async def process_message(sqs_client, message, semaphore):
     """
 
     async with semaphore:
-        # 메시지 처리
+        # SQS 메시지 처리 시작
         receipt_handle = message['ReceiptHandle']
         body = json.loads(message['Body'].strip())
 
@@ -48,6 +50,11 @@ async def process_message(sqs_client, message, semaphore):
         task_type = body["jobType"]
 
         logger.info(f"[Process] 메시지 수신: {body}")
+        try:
+            await send_message(f"[Process] 메시지 수신: {body}")
+            logger.info(f"[Discord] 메시지 전송 성공")
+        except Exception as e:
+            logger.error(f"[Discord] 메시지 전송 실패: {e}")
 
         # 임시 디렉토리 생성
         tmp_output_dir = tempfile.mkdtemp()
@@ -61,6 +68,7 @@ async def process_message(sqs_client, message, semaphore):
             async with aws_session.client('s3') as s3_dl_client:
                 key = "requestFiles/" + str(body["musicId"]) + "/" + s3_key
                 await download_from_s3(s3_dl_client, S3_BUCKET, key, input_path)
+            input_path = replace_spaces_in_filename(input_path)
 
             # 2. Task 처리
             if task_type == "TRACK":
@@ -84,7 +92,7 @@ async def process_message(sqs_client, message, semaphore):
         except Exception as e:
             logger.error(f"[Error] 메시지 처리 중 예외 발생: {e}")
             endpoint += "fail"
-            # ** 실패할 경우 payload 변경
+            # 실패 시 payload 구조 설정
             payload = {
                 "taskId": task_id,
                 "failMessage": str(e)
@@ -92,11 +100,26 @@ async def process_message(sqs_client, message, semaphore):
 
         finally:
             # 4. Spring 서버에 알림
-            async with aiohttp.ClientSession() as http_session:
-                await notify_spring(http_session, endpoint, payload)
-            # 5. SQS 메시지 삭제
-            await sqs_client.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
-            logger.info(f"[Delete] SQS 메시지 삭제 완료: task_id = {task_id}")
-            # 임시 디렉토리 정리
-            logger.info(f"[Cleanup] 임시 디렉토리 삭제: {tmp_output_dir}")
-            shutil.rmtree(tmp_output_dir, ignore_errors=True)
+            try:
+                async with aiohttp.ClientSession() as http_session:
+                    await notify_spring(http_session, endpoint, payload)
+                try:
+                    await send_message(f"[Process] 메세지 처리 및 스프링 전송 완료: {payload}")
+                    logger.info(f"[Discord] 메시지 전송 성공")
+                except Exception as e:
+                    logger.error(f"[Discord] 메시지 전송 실패: {e}")
+            except Exception as e:
+                try:
+                    await send_message(f"[Process] 메세지 처리 및 스프링 전송 실패: {payload}")
+                    logger.info(f"[Discord] 메시지 전송 성공")
+                except Exception as e:
+                    logger.error(f"[Discord] 메시지 전송 실패: {e}")
+            finally:
+                # 5. SQS 메시지 삭제
+                try:
+                    await sqs_client.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
+                finally:
+                    logger.info(f"[Delete] SQS 메시지 삭제 완료: task_id = {task_id}")
+                    # 임시 디렉토리 정리
+                    logger.info(f"[Cleanup] 임시 디렉토리 삭제: {tmp_output_dir}")
+                    shutil.rmtree(tmp_output_dir, ignore_errors=True)
