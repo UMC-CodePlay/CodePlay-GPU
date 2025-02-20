@@ -9,6 +9,7 @@ from src.config import (
     minor_keys, major_keys, notes, cpu_executor, major_mapping, minor_mapping, note_mapping)
 
 
+
 def run_harmony_sync(input_path):
     """
     Performs harmonic analysis and audio feature extraction on the given input audio file.
